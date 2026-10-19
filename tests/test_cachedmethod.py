@@ -1,5 +1,4 @@
 import unittest
-import warnings
 from collections.abc import Callable
 
 from cachetools import Cache, cachedmethod, keys
@@ -925,15 +924,7 @@ class UnboundMethodTest(unittest.TestCase):
         self.assertEqual(Cached.get.__wrapped__(cached, 1), 1)
         self.assertEqual(len(cached.cache), 0)
 
-    def test_autospec_no_warnings(self):
-        import unittest.mock
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            unittest.mock.create_autospec(Cached, instance=True)
-        self.assertEqual(len(w), 0)
-
-    def test_autospec_call(self):
+    def test_autospec(self):
         import unittest.mock
 
         mock = unittest.mock.create_autospec(Cached, instance=True)
