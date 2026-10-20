@@ -924,6 +924,30 @@ class UnboundMethodTest(unittest.TestCase):
         self.assertEqual(Cached.get.__wrapped__(cached, 1), 1)
         self.assertEqual(len(cached.cache), 0)
 
+    def test_class_access_pickle(self):
+        import pickle
+
+        for proto in range(pickle.HIGHEST_PROTOCOL + 1):
+            with self.subTest(proto=proto):
+                self.assertIs(pickle.loads(pickle.dumps(Cached.get, proto)), Cached.get)
+
+    def test_class_access_copy(self):
+        import copy
+
+        self.assertIs(copy.copy(Cached.get), Cached.get)
+        self.assertIs(copy.deepcopy(Cached.get), Cached.get)
+
+    def test_class_access_alias(self):
+        class Alias(Cached):
+            alias = Cached.get
+
+        self.assertIs(Alias.alias, Cached.get)
+        cached = Alias(Cache(2))
+        self.assertEqual(cached.alias(1), 0)
+        self.assertEqual(cached.alias(1), 0)
+        self.assertIs(cached.alias, cached.get)
+        self.assertEqual(len(cached.cache), 1)
+
     def test_autospec(self):
         import unittest.mock
 

@@ -105,6 +105,16 @@ class _Unbound:
         functools.update_wrapper(self, descriptor.__wrapped__)
         self.__descriptor = descriptor
 
+    def __reduce__(self):
+        # pickle and copy by reference, as functions are
+        return (self.__descriptor.__get__, (None,))
+
+    # bind like a method when aliased in another class body
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        return self.__descriptor.__get__(obj)
+
     # Receiver is taken from *args so autospec'd instances accept any call,
     # as they did before class access returned a callable.
     def __call__(self, /, *args, **kwargs):
