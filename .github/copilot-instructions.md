@@ -66,7 +66,8 @@ method, so `inspect.signature()` keeps `self`) and stores it in `obj.__dict__`;
 wrappers reached through `super()` go to `obj.__dict__["__cachetools_cachedmethods"]`,
 keyed by descriptor. Class access returns a lazily created `_Unbound` callable object,
 deliberately not a function so `create_autospec()` strips the receiver (#443); it takes
-the receiver from `*args`.
+the receiver from `*args`, binds via `__get__` when aliased in another class body, and
+pickles/copies by reference through its descriptor.
 `update_wrapper()` runs *after* the descriptor's state is set, so stacked
 `@cachedmethod` silently uses the inner cache. Pickle/deepcopy (#417):
 `_WrapperBase.__reduce__` returns `(descriptor.__get__, (obj,))` and
