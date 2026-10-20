@@ -732,6 +732,8 @@ class TLRUCache(_TimedCache):
 class CacheInfo(collections.namedtuple("CacheInfo", "hits misses maxsize currsize")):
     """Named tuple holding cache statistics."""
 
+    __slots__ = ()
+
     @classmethod
     def _make_info(cls, cache, hits, misses):
         if isinstance(cache, Cache):
