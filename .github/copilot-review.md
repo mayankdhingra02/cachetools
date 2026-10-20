@@ -1,23 +1,22 @@
 # Code Review — cachetools 8.0.0 (unreleased)
 
-**Date:** 2026-10-19
-**Reviewed:** `dev/v8.0.0` at `64bf761`, plus uncommitted changes: `docs/index.rst`
-describes expiry as lazy, e.g. on the next `__setitem__`, in both `expire()` entries
-and in "Extending cache classes", and `tests/test_ttl.py`/`tests/test_tlru.py` add
-`test_ttl_iter_expired`/`test_ttu_iter_expired`. Last changes: `26e247f` ("improve branch
-cov": tests for growing an existing entry and for `test_decorator_same_name`),
-`fc542db` ("Prepare v8.0.0") and `00d1bfe` ("Fix #417: Re-enable pickling of objects
-with cached methods.", last source change). Scope: all of `src/`, `tests/`, `docs/`,
-stubs, packaging and CI.
+**Date:** 2026-10-20
+**Reviewed:** `dev/v8.0.0` at `46345ef`, rebased onto
+`v7.2.4` (`6f23e2a`). Changes since the last review (`64bf761`): the v7.2.4 merge
+brought `_Unbound` (`95e6add`, "Fix #443: Restore autospec calls to `@cachedmethod`
+decorated methods"), `--cov-branch` in `tox.ini` and the 7.2.4 `CHANGELOG.rst`
+entry; `b172253` ("Autospec cleanup") merges the autospec tests; the lazy-expiry
+docs and `test_ttl_iter_expired`/`test_ttu_iter_expired` are now committed, and
+`ClassMethodTest`, lost in the rebase of `9182ec2`, is restored in the working tree.
+Scope: all of `src/`, `tests/`, `docs/`, stubs, packaging and CI.
 
-**CI status:** All `tox` environments pass locally on Python 3.11.2: `py` (383 passed,
-8 subtests), `docs`, `doctest` (58 tests), `pyright` (0 errors), `ruff`,
-`ruff-format`. 3.12–3.15, the free-threaded builds and PyPy were not run locally.
+**CI status:** All `tox` environments pass locally on Python 3.11.2: `py` (384 passed),
+`docs`, `doctest` (58 tests), `pyright` (0 errors), `ruff`, `ruff-format`.
+3.12–3.15, the free-threaded builds and PyPy were not run locally.
 
 **Coverage:** `tox` measures line and branch coverage (`--cov-branch` in `tox.ini`),
-which CI uploads to Codecov.  100% across the CI matrix, and also locally on 3.11,
-where the pre-3.13 `@classmethod` check (`_descriptor.py:32`) is reached; runs on
-3.13+ alone show 99%.
+which CI uploads to Codecov.  100% locally on 3.11, where the pre-3.13 `@classmethod`
+check (`_descriptor.py:32`) is reached; runs on 3.13+ alone miss that line.
 
 ## Code — Potential Issues
 
@@ -26,23 +25,25 @@ none blocks the release.
 
 | # | Priority | Location | Finding |
 |---|----------|----------|---------|
-| 1 | Low | `_MethodDescriptor.__get__` | `copy.copy(obj)` shallow-copies `obj.__dict__`, so the copy shares the original's wrapper, still bound to the original `obj`. Verified again: after `a2 = copy.copy(a); a2.cache = {}; a2.get(6)` the result lands in `a.cache` and `a2.get is a.get`. `copy.deepcopy` and `pickle` are fine. A data-descriptor fix (fast path checking `wrapper.__self__ is obj` and the creating descriptor, `__set__`/`__delete__` writing through to the dict, splitting a shared `__cachetools_cachedmethods` dict on first stale hit) was prototyped and passes the suite, but attribute access goes from ~15 ns to ~160 ns and a cached call from ~730 ns to ~970 ns on 3.14. Same semantics as `functools.cached_property`; recommend a docs caveat instead of the fix. |
-| 2 | Low | `_MethodDescriptor.__get__` (`super()` path) | `super().method` never hits the instance dict, so every call builds a throw-away wrapper (including `functools.update_wrapper`) and rescans the MRO before `setdefault` returns the stored one. Correct, but noticeably slower than the primary path. |
-| 3 | Low | `_descriptor.py` / `_cachedmethod.py` `_wrapper` | Stacked `@cachedmethod` silently ignores the outer decorator: `functools.update_wrapper(descriptor, method)` copies the inner descriptor's `__dict__`, including its private `_MethodDescriptor__wrapper` (and `__owner`/`__attrname`/`__unbound`), onto the outer one. Verified: only the inner cache is filled, the outer stays empty, and the outer `__wrapped__` is the inner `_MethodDescriptor`. Stacking is unsupported, but this is the same class of bug fixed for `@cached` in 7.2.3; calling `update_wrapper` inside `_MethodDescriptor.__init__` *before* setting its own state would make it fail loudly (or work). |
-| 4 | Low | `CacheInfo` (`__init__.py`) | The `namedtuple` subclass does not declare `__slots__ = ()`, so every `CacheInfo` instance carries an empty per-instance `__dict__` (verified: `hasattr(CacheInfo(1, 2, 3, 4), "__dict__")` is `True`). The `collections` docs recommend `__slots__ = ()` for namedtuple subclasses; adding it is a one-line, behavior-neutral fix (the stub already models `CacheInfo` as a `NamedTuple`). |
-| 5 | Low | `Cache.__setitem__` / `__delitem__` | Size accounting assumes a value's size is stable after insertion; mutating cached values in place can desync `currsize`. By design and documented, but a known footgun. |
-| 6 | Low | `_decorator.py` `_ConditionMixin` / `_ConditionInfoMixin` | Stampede prevention uses a pending set per wrapper, i.e. per instance for `@cachedmethod`. Two instances sharing one cache and condition do not coordinate pending keys. |
-| 7 | Info | `_cachedmethod.py` `_WrapperBase` | `inspect.signature(obj.method)` reports `(self, value)` for a `@cachedmethod` wrapper, because `__wrapped__` is the unbound function and the wrapper is a callable object rather than a `MethodType`. `@cached` on a method yields `(value)` since `__get__` returns a real bound method. Frameworks that `bind()` call arguments against the signature will see a spurious `self` parameter. Setting `__wrapped__` to the bound partial would fix introspection but break the documented `wrapper.__wrapped__(self, ...)` contract; a per-instance `__signature__` costs time on every first access. Document rather than fix. |
-| 8 | Info | `_WrapperBase.__reduce__` | Unpickling resets `hits`/`misses` of `info=True` wrappers (documented in the code and asserted by `test_decorator_pickle_info`). Acceptable, since counters are a tuning aid. |
-| 9 | Info | `_MethodDescriptor.__reduce__` / `_lookup` | Pickles reference `cachetools._descriptor._MethodDescriptor._lookup` by qualified name, so that path must stay importable for pickles to load across releases (same constraint as `@cached` pickling by `__qualname__`). `_lookup` also resolves through the owner's *current* class dict: a pickle loaded while `Cls.method` is reassigned (verified with `unittest.mock.patch.object`) silently yields a bound method of the replacement instead of a wrapper. |
-| 10 | Info | `_MethodDescriptor.__reduce__` | A descriptor that never received `__set_name__` reduces to `_lookup(None, None)`: `pickle.dumps` succeeds, `pickle.loads` raises `AttributeError`. Such a descriptor is unusable anyway. |
-| 11 | Info | `_MethodDescriptor.__set_name__` | Assigning one descriptor to the same attribute name in two classes keeps the first owner silently (verified: the second owner's instances work and store the wrapper under the same name; `_lookup` resolves through the first owner). Harmless as long as the first class keeps the attribute; the accepted case is pinned by `test_decorator_same_name`. |
-| 12 | Info | `_cachedmethod.py` `_WrapperBase` | Each per-instance wrapper references `obj`, and `obj.__dict__` references the wrapper, so instances with active wrappers are freed only by the cyclic GC, not by reference counting (verified with `gc.disable()` and a weakref). Expected for this design; worth knowing for large or short-lived instances. |
-| 13 | Info | `_decorator.py` condition mixins | Same-thread recursive re-entry on the same key deadlocks (`wait_for` on its own pending marker). |
-| 14 | Info | `_MethodDescriptor.__get_unbound` / `__call__` | Lazy creation of the cached `unbound` function is unsynchronized; concurrent first class accesses may briefly see distinct (equivalent) functions. Benign. Two error messages are misleading at the margins: `Cls.method(None, 1)` reports "No `__dict__` attribute on 'int' instance" (the `None` receiver makes `__get__` return `unbound`, which then binds `1`), and calling the raw descriptor from `Cls.__dict__` reports "Decorating class methods is not supported". |
-| 15 | Info | `TTLCache.__delitem__` / `TLRUCache.__delitem__` | Deleting a key that is present but expired removes it and then raises `KeyError`. Consistent with `key in cache` being `False`; intentional. Neither `__delitem__` calls `expire()` (verified), unlike `__setitem__`, `__len__`, `__repr__`, `currsize` and `popitem`. |
-| 16 | Info | `Cache.__setitem__` | With `maxsize=math.inf` and a `getsizeof` returning `math.inf`, the value is accepted (`inf > inf` is false), `currsize` becomes `inf`, and deleting the item leaves `currsize = nan`. Only non-negative sizes are validated. Pathological input; not worth a check on the hot path. |
-| 17 | Info | `TLRUCache.__iter__` | Iterates the expiry heap, so `list(cache)` is in heap order (verified: inserting 1, 2, 3 with ttu 30/10/20 yields `[2, 1, 3]`), while `TTLCache` iterates in expiry (= insertion) order and `popitem()` uses LRU order. No ordering is documented; fine, but surprising next to `TTLCache`. |
+| 1 | Low | `_MethodDescriptor.__get__` (`super()` path) | `super().method` never hits the instance dict, so every call builds a throw-away wrapper (including `functools.update_wrapper`) and rescans the MRO before `setdefault` returns the stored one. Correct, but noticeably slower than the primary path. |
+| 2 | Low | `CacheInfo` (`__init__.py`) | The `namedtuple` subclass does not declare `__slots__ = ()`, so every `CacheInfo` instance carries an empty per-instance `__dict__` (verified: `hasattr(CacheInfo(1, 2, 3, 4), "__dict__")` is `True`). The `collections` docs recommend `__slots__ = ()` for namedtuple subclasses; adding it is a one-line, behavior-neutral fix (the stub already models `CacheInfo` as a `NamedTuple`). |
+| 3 | Low | `Cache.__setitem__` / `__delitem__` | Size accounting assumes a value's size is stable after insertion; mutating cached values in place can desync `currsize`. By design and documented, but a known footgun. |
+| 4 | Low | `_decorator.py` `_ConditionMixin` / `_ConditionInfoMixin` | Stampede prevention uses a pending set per wrapper, i.e. per instance for `@cachedmethod`. Two instances sharing one cache and condition do not coordinate pending keys. |
+| 5 | Low | `_descriptor.py` `_Unbound` | Class access (`Cls.method`) now returns an `_Unbound` callable object instead of a function (#443).  Verified with a probe on 3.11: `pickle.dumps(Cls.method)` raises `PicklingError` for protocols 0–5 ("not the same object as `Cls.method`", since `__wrapped__` is pickled by `__qualname__`), whereas the previous `unbound` function pickled by name; `inspect.isroutine(Cls.method)` is `False`, so introspection tools that look for routines may treat it as a data attribute; `repr()` is `<cachetools._descriptor._Unbound object at ...>`; and `alias = Cls.method` in another class body no longer binds, so `Other().alias(1)` passes `1` as the receiver ("No '__dict__' attribute on 'int' instance").  Accepted cost of the autospec fix; a `__repr__` and `__reduce__` (e.g. via `_MethodDescriptor._lookup` plus `__get__(None)`) would cover the first and third points cheaply. |
+| 6 | Info | `_MethodDescriptor.__get__` | `copy.copy(obj)` shallow-copies `obj.__dict__`, so the copy shares the original's wrapper, still bound to the original `obj` (`a2.get is a.get`).  `copy.deepcopy` and `pickle` are fine.  Accepted, `functools.cached_property` semantics; the data-descriptor fix was rejected for its per-call cost (*Maintainer Decisions* in `copilot-instructions.md`). |
+| 7 | Info | `_descriptor.py` / `_cachedmethod.py` `_wrapper` | Stacked `@cachedmethod` silently uses the inner cache only, because `functools.update_wrapper(descriptor, method)` copies the inner descriptor's private state onto the outer one.  Stacking is unsupported and untested (*Maintainer Decisions* in `copilot-instructions.md`). |
+| 8 | Info | `_descriptor.py` `_Unbound.__call__` | By design (see its docstring), autospec'd instances accept any arguments: `inspect.signature(mock.method)` is `(*args, **kwargs)` and `mock.method(1, 2)` does not raise for a one-parameter method (verified).  Autospec no longer checks call arity for `@cachedmethod` methods. |
+| 9 | Info | `_cachedmethod.py` `_WrapperBase` | `inspect.signature(obj.method)` reports `(self, value)` for a `@cachedmethod` wrapper, because `__wrapped__` is the unbound function and the wrapper is a callable object rather than a `MethodType`. `@cached` on a method yields `(value)` since `__get__` returns a real bound method. Frameworks that `bind()` call arguments against the signature will see a spurious `self` parameter. Setting `__wrapped__` to the bound partial would fix introspection but break the documented `wrapper.__wrapped__(self, ...)` contract; a per-instance `__signature__` costs time on every first access. Document rather than fix. |
+| 10 | Info | `_WrapperBase.__reduce__` | Unpickling resets `hits`/`misses` of `info=True` wrappers (documented in the code and asserted by `test_decorator_pickle_info`). Acceptable, since counters are a tuning aid. |
+| 11 | Info | `_MethodDescriptor.__reduce__` / `_lookup` | Pickles reference `cachetools._descriptor._MethodDescriptor._lookup` by qualified name, so that path must stay importable for pickles to load across releases (same constraint as `@cached` pickling by `__qualname__`). `_lookup` also resolves through the owner's *current* class dict: a pickle loaded while `Cls.method` is reassigned (verified with `unittest.mock.patch.object`) silently yields a bound method of the replacement instead of a wrapper. |
+| 12 | Info | `_MethodDescriptor.__reduce__` | A descriptor that never received `__set_name__` reduces to `_lookup(None, None)`: `pickle.dumps` succeeds, `pickle.loads` raises `AttributeError`. Such a descriptor is unusable anyway. |
+| 13 | Info | `_MethodDescriptor.__set_name__` | Assigning one descriptor to the same attribute name in two classes keeps the first owner silently (verified: the second owner's instances work and store the wrapper under the same name; `_lookup` resolves through the first owner). Harmless as long as the first class keeps the attribute; the accepted case is pinned by `test_decorator_same_name`. |
+| 14 | Info | `_cachedmethod.py` `_WrapperBase` | Each per-instance wrapper references `obj`, and `obj.__dict__` references the wrapper, so instances with active wrappers are freed only by the cyclic GC, not by reference counting (verified with `gc.disable()` and a weakref). Expected for this design; worth knowing for large or short-lived instances. |
+| 15 | Info | `_decorator.py` condition mixins | Same-thread recursive re-entry on the same key deadlocks (`wait_for` on its own pending marker). |
+| 16 | Info | `_MethodDescriptor.__get_unbound` / `__call__` | Lazy creation of the cached `_Unbound` object is unsynchronized; concurrent first class accesses may briefly see distinct (equivalent) objects. Benign. Two error messages are misleading at the margins: `Cls.method(None, 1)` reports "No `__dict__` attribute on 'int' instance" (the `None` receiver makes `__get__` return the `_Unbound` object, which then takes `1` as its receiver), and calling the raw descriptor from `Cls.__dict__` reports "Decorating class methods is not supported". |
+| 17 | Info | `TTLCache.__delitem__` / `TLRUCache.__delitem__` | Deleting a key that is present but expired removes it and then raises `KeyError`. Consistent with `key in cache` being `False`; intentional. Neither `__delitem__` calls `expire()` (verified), unlike `__setitem__`, `__len__`, `__repr__`, `currsize` and `popitem`. |
+| 18 | Info | `Cache.__setitem__` | With `maxsize=math.inf` and a `getsizeof` returning `math.inf`, the value is accepted (`inf > inf` is false), `currsize` becomes `inf`, and deleting the item leaves `currsize = nan`. Only non-negative sizes are validated. Pathological input; not worth a check on the hot path. |
+| 19 | Info | `TLRUCache.__iter__` | Iterates the expiry heap, so `list(cache)` is in heap order (verified: inserting 1, 2, 3 with ttu 30/10/20 yields `[2, 1, 3]`), while `TTLCache` iterates in expiry (= insertion) order and `popitem()` uses LRU order. No ordering is documented; fine, but surprising next to `TTLCache`. |
 
 ## Type Stubs (`__init__.pyi`, `keys.pyi`, `func.pyi`)
 
@@ -59,13 +60,13 @@ none blocks the release.
 
 | # | Priority | Finding |
 |---|----------|---------|
-| 1 | Low | No test checks that `copy.copy(obj)` gets its own wrapper, or pins the current sharing behavior (Code #1). |
+| 1 | Low | No test checks that `copy.copy(obj)` gets its own wrapper, or pins the current sharing behavior (Code #6). |
 | 2 | Low | `UnboundMethodTest` does not assert that class access exposes no `cache_clear`/`cache_info` (verified: both `hasattr` checks are `False`), and does not exercise class access for the lock/condition variants. |
-| 3 | Low | The pickle tests use the default protocol only. Protocols 0–5 were verified by hand; a `subTest` loop over `range(pickle.HIGHEST_PROTOCOL + 1)` would pin this, as `tests/__init__.py` does for caches. |
-| 4 | Info | `test_threading.py` `run_cond_test` asserts `misses == 1`, but nothing forces the threads to overlap (the lock tests use a `Barrier` inside the function; a condition-guarded function cannot, since only one thread enters). `misses == 1` would also hold if the threads happened to run sequentially, so the test demonstrates correctness but cannot detect a broken stampede guard. Hard to fix deterministically; note only. |
-| 5 | Info | `CacheTestMixin` deliberately checks key existence rather than the specific eviction victim; policy-specific checks live in the per-cache test files. No action needed. |
-| 6 | Info | `test_func.py` calls decorators through `Callable[..., Any]`; one concrete test (`FIFODecoratorTest.test_method_typed`) covers the shared `_cachetools_cache_wrapper` stub. Enough. |
-| 7 | Info | The `CountedCondition` comment in `tests/__init__.py` ("wait() and notify() are also required according to the docs...") reads as an open question. The stub (`d008c95`) now settles it: the full `threading.Condition` interface is required, with `wait()`/`notify()` reserved for future use. Align the comment with that wording. |
+| 3 | Low | No test pins the `_Unbound` trade-offs (Code #5), e.g. that `pickle.dumps(Cls.method)` fails, so a future change to class access cannot be judged against the current behavior. |
+| 4 | Low | The pickle tests use the default protocol only. Protocols 0–5 were verified by hand; a `subTest` loop over `range(pickle.HIGHEST_PROTOCOL + 1)` would pin this, as `tests/__init__.py` does for caches. |
+| 5 | Info | `test_threading.py` `run_cond_test` asserts `misses == 1`, but nothing forces the threads to overlap (the lock tests use a `Barrier` inside the function; a condition-guarded function cannot, since only one thread enters). `misses == 1` would also hold if the threads happened to run sequentially, so the test demonstrates correctness but cannot detect a broken stampede guard. Hard to fix deterministically; note only. |
+| 6 | Info | `CacheTestMixin` deliberately checks key existence rather than the specific eviction victim; policy-specific checks live in the per-cache test files. No action needed. |
+| 7 | Info | `test_func.py` calls decorators through `Callable[..., Any]`; one concrete test (`FIFODecoratorTest.test_method_typed`) covers the shared `_cachetools_cache_wrapper` stub. Enough. |
 
 ## Docs — `docs/index.rst`
 
@@ -75,7 +76,7 @@ none blocks the release.
 
 | # | Priority | Finding |
 |---|----------|---------|
-| 1 | Low | The `@cachedmethod` docs do not mention that class access (`Cls.method`) yields a plain function without `cache_clear()`/`cache_info()`, that `copy.copy()` of an instance shares its wrappers (Code #1), that pickling an instance resets its `cache_info()` counters, or that `inspect.signature()` of a bound wrapper still shows `self` (Code #7). |
+| 1 | Low | The `@cachedmethod` docs do not mention that class access (`Cls.method`) yields a plain callable without `cache_clear()`/`cache_info()` that cannot be pickled (Code #5), that `copy.copy()` of an instance shares its wrappers (Code #6), that pickling an instance resets its `cache_info()` counters, or that `inspect.signature()` of a bound wrapper still shows `self` (Code #9). |
 | 2 | Low | The pickling note on `Cache` (lines 80–88) says the cache classes "can generally be pickled" without saying what the exception is. Verified with a probe: pickling fails with `PicklingError` for a `getsizeof`, `timer` or `ttu` callable that is itself unpicklable, e.g. a lambda; the defaults and module-level functions such as `len` work. Suggest "can be pickled, provided that any `getsizeof`, `timer` or `ttu` callable is picklable". |
 | 3 | Info | Neither the `@cached` nor the `cachetools.func.*_cache` docs mention that they may decorate methods. Worth a one-line caveat that the cache and counters are then shared across all instances, unlike `@cachedmethod` (verified: two instances share one `CacheInfo`). |
 | 4 | Info | The `ExpCache` doctest (line 262) calls `time.sleep(1.5)`, which accounts for most of the `doctest` environment's runtime. A `Timer` object as in `tests/test_ttl.py` would make the example deterministic and instant, at the cost of a few more lines. |

@@ -64,7 +64,9 @@ are deliberately no `__copy__`/`__deepcopy__` methods.
 one per-instance wrapper (bound via `functools.partial`; `__wrapped__` is the unbound
 method, so `inspect.signature()` keeps `self`) and stores it in `obj.__dict__`;
 wrappers reached through `super()` go to `obj.__dict__["__cachetools_cachedmethods"]`,
-keyed by descriptor. Class access returns a lazily created plain `unbound` function.
+keyed by descriptor. Class access returns a lazily created `_Unbound` callable object,
+deliberately not a function so `create_autospec()` strips the receiver (#443); it takes
+the receiver from `*args`.
 `update_wrapper()` runs *after* the descriptor's state is set, so stacked
 `@cachedmethod` silently uses the inner cache. Pickle/deepcopy (#417):
 `_WrapperBase.__reduce__` returns `(descriptor.__get__, (obj,))` and
@@ -73,8 +75,8 @@ rebuilt through their descriptor, counters reset, and lock, condition and
 `__wrapped__` are never serialized. `_lookup` must stay importable and reads the
 owner's *current* class dict. `copy.copy(obj)` shares the wrappers, still bound to the
 original. `TypeError` is raised for `@classmethod` (via `__call__` on 3.13+, via
-`__get__` before), for a second `__set_name__` and for instances without a writable
-`__dict__`.
+`__get__` before), for a second `__set_name__`, for class-access calls without an
+instance and for instances without a writable `__dict__`.
 
 **`func.py`, `keys.py`**: `*_cache` decorators use `cached(..., condition=Condition(),
 info=True)` plus `cache_parameters()`; `maxsize=None` uses a `dict` (`ttl_cache`:
